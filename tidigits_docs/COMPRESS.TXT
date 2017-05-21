@@ -1,0 +1,89 @@
+
+	   ABOUT SPEECH FILE COMPRESSION AND UNCOMPRESSION
+	   -----------------------------------------------
+
+All speech data files in this release of the TIDIGITS corpus (*.wav)
+are stored on the CD-ROMs in compressed form.  The particular form of
+compression used is version 2.0 of ``shorten'', developed by Tony
+Robinson at Cambridge University.  This algorithm is intended to give
+optimal compression results for speech sample data.
+
+Two software implementations of shorten are available.  Both will
+provide the same output when uncompressing the TIDIGITS speech data,
+and complete source code packages are included here for both.
+
+One is a stand-alone program developed by Tony Robinson (in the
+``shorten'' directory).  This package includes a pre-compiled
+executable program file for MS-DOS users (shorten.exe), so that MS-DOS
+users do not need a C compiler system to get started.  (Users of other
+operating systems will need a C compiler and related utilities to make
+an executable program from the source files; but assuming these are
+available, the actual compilation is very simple.)
+
+The other is as embedded functions within the NIST SPHERE software
+package (in the ``sphere'' directory).  This package must be installed
+via a process involving creation of some object library files and
+several executable utility programs; this installation process is
+designed for use with the UNIX operating system, and is unlikely to be
+easily adaptable to other systems.
+
+In terms of choosing which implementation to use, people who are not
+using UNIX platforms should simply use the stand-alone shorten
+program; this will be sufficient to provide uncompressed sample data.
+
+People who are using a UNIX system will have a choice of using shorten
+or sphere.  These differ in the following regards.  Stand-alone
+shorten is compact, and is easy and quick to install and use, but it
+does only one thing: compression or uncompression of speech files.
+The sphere package is much larger, takes longer to install, and may
+require custom installation steps on some UNIX systems; execution
+speed may be slightly slower (but perhaps not significantly so);
+program usage is only slightly more complicated, by virtue of having
+options to support a wider range of activities.  The ``w_decode''
+utility can produce uncompressed output with selectable byte order.
+It also makes sure that the file header of the resulting file is
+updated to reflect all changes to the file contents; this allows for
+use of other sphere utilities (w_edit, h_edit, h_read, etc) on the
+output data, which can be very convenient.
+
+UNIX users should NOT use both packages (e.g. shorten to uncompress
+and other sphere utilities to do other things); shorten will not
+modify the file headers, and this will cause the sphere utilities to
+perform incorrectly on the resulting files.  If you intend to use
+other sphere utilities (or other processes that recognize and use
+sphere file headers), be sure to use ``w_decode'' for uncompression.
+
+The following explains how to use each package to uncompress the
+waveform data; it will be assumed that the programs can be found in
+the user's current execution path, and that the names ``infile.sph''
+and ``outfile.sph'' represent suitable file names, with directory
+paths included if necessary, to locate and identify the input and
+output files.
+
+SHORTEN:
+
+	shorten -x -a 1024 infile.wav outfile.wav
+
+(The "-a 1024" option specifies that the 1024-byte sphere header
+should be passed through unmodified to the output file; without this
+option, the command will fail.)
+
+SPHERE:
+
+	w_decode -o pcm infile.wav outfile.wav
+
+(The "pcm" argument can be replaced with "pcm_10" or "pcm_01", to
+force the output samples to be high-byte-first or low-byte-first,
+respectively; the command as shown above will produce output samples
+with the native byte order of the system on which the sphere package
+was installed.)
+
+In both cases shown above, it is possible to replace "outfile.wav"
+with a dash "-", representing stdout, in order to have the
+uncompressed data piped directly to some other process (e.g. a d/a
+playback program).
+
+Note that the compression has been done in a way that leaves the
+sphere headers uncompressed; it is therefore possible to read the
+headers without having to uncompress the files first.
+

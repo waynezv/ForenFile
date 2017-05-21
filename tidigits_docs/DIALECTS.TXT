@@ -1,0 +1,28 @@
+; File: dialects.txt - Updated 01/24/91
+;
+; TI Connected Digits dialect codes and descriptions
+;
+;Code   City			Dialect Region
+;----	------------------      --------------------
+01	Boston, MA		Eastern New England
+02	Richmond, VA		Virginia Piedmont
+03	Lubbock, TX		Southwest
+04	Los Angeles, CA		Southern California
+05	Knoxville, TN		South Midland
+06	Rochester, NY		Central New York
+07	Denver, CO		Rocky Mountains
+08	Milwaukee, WS		North Central
+09	Philadelphia, PA	Delaware Valley
+10	Kansas City, KS		Midland
+11	Chicago, IL		North Central
+12	Charleston, SC		South Carolina
+13	New Olrleans, LA	Gulf South
+14	Dayton, OH		South Midland
+15	Atlanta, GA		Gulf South
+16	Miami, FL		Spanish American
+17	Dallas, TX		Southwest
+18	New York, NY		New York City
+19	Little Rock, AR		South Midland
+20	Portland, OR		Pacific Northwest
+21	Pittsburgh, PA		Upper Ohio Valley
+22				Black
