@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# Align MFCCs with transcripts to decode the correspondence between words / phones
+# and audio frames for TIMIT data.
+# wzhao1 cs cmu edu
+# 05/27/2017
+
 # if [ $? PBS_O_WORKDIR ]; then
     # cd $PBS_O_WORKDIR
 # fi

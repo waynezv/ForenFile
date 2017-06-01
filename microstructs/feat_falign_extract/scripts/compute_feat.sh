@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# Compute MFCC / log spectrogram features from audios.
+# wzhao1 cs cmu edu
+# 05/20/2017
+
 if [ $# -eq 0 ]; then # empty space needed after [
     echo "USAGE: ${0} [--type] feat_type (logspec / mfcc) [-f] filelist
         [-i] indir [-o] outdir [-t] tmpdir"
