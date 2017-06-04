@@ -5,10 +5,6 @@
 # wzhao1 cs cmu edu
 # 05/27/2017
 
-# if [ $? PBS_O_WORKDIR ]; then
-    # cd $PBS_O_WORKDIR
-# fi
-
 if [[ $# -lt 11 ]]; then
     echo "USAGE: $0 [--part] part [--npart] npart
     [--listbasedir] dir containing list files
@@ -17,8 +13,8 @@ if [[ $# -lt 11 ]]; then
     [--dictf] file containing dict
     [--fillerf] file containing filler dict
     [--mfcdir] dir containing mfcc
-    [--outputdir] output dir
-    [--phsegdir] dir for phone segments output
+    [--outputdir] dir to store outputed logs, ctls, etc
+    [--outsegdir] dir to store outputed phone/word segments
     [--jobname] job name"
 
     exit 0
@@ -64,8 +60,8 @@ while [[ $# -gt 1 ]]; do # if $# -gt 0, then can deal with single arg
             OUTDIR="$2"
             shift
             ;;
-        --phsegdir)
-            PHSEG="$2"
+        --outsegdir)
+            OUTSEG="$2"
             shift
             ;;
         --jobname)
@@ -79,6 +75,8 @@ while [[ $# -gt 1 ]]; do # if $# -gt 0, then can deal with single arg
     shift
 done
 
+echo "Preparing for force alignment ..."
+
 # Input setup
 CTLFN="$LISTBASE/$CTL"
 TRANSFN="$LISTBASE/$TRANS"
@@ -87,42 +85,51 @@ FILLFN="$LISTBASE/$FILL"
 MFCDIR="$MFC"
 CEPEXT="80-7200-40f.mfc"
 
+[[ -e "$CTLFN" ]] || (echo "$CTLFN not found"; exit 1)
+[[ -e "$TRANSFN" ]] || (echo "$TRANSFN not found"; exit 1)
+[[ -e "$DICTFN" ]] || (echo "$DICTFN not found"; exit 1)
+[[ -e "$FILLFN" ]] || (echo "$FILLFN not found"; exit 1)
+[[ -e "$MFCDIR" ]] || (echo "$MFCDIR not found"; exit 1)
+
 # Output setup
-BASEDIR="./"
-[[ -e "$BASEDIR/$OUTDIR" ]] || mkdir -p "$BASEDIR/$OUTDIR"
+[[ -e "$OUTDIR" ]] || mkdir -p "$OUTDIR"
 
-outtransfn="$BASEDIR/$OUTDIR/$JOB.faligned-$PART.trans"
-outctlfn="$BASEDIR/$OUTDIR/$JOB.faligned-$PART.ctl"
-logfn="$BASEDIR/$OUTDIR/$JOB.faligned-$PART.log"
+outtransfn="${OUTDIR}/${JOB}.faligned-${PART}.trans"
+outctlfn="${OUTDIR}/${JOB}.faligned-${PART}.ctl"
+logfn="${OUTDIR}/${JOB}.faligned-${PART}.log"
 
-for f in $( cat $CTLFN | awk '{print $1}' ); do
+for f in $( cat $CTLFN | awk '{print $1;}' ); do
     dirhead=$( dirname $f )
-    [[ -e "$PHSEG/$dirhead" ]] || mkdir -p "$PHSEG/$dirhead"
+    [[ -e "${OUTSEG}/${dirhead}" ]] || mkdir -p "${OUTSEG}/${dirhead}"
 done
 
 # Job setup
-nlines=$( wc $CTLFN | awk '{print $1}' ) # number of lines in ctl file
-echo $nlines
+nlines=$( wc $CTLFN | awk '{print $1;}' ) # number of lines in ctl file
 ctloffset=$(( ( $nlines * ($PART - 1) ) / $NPART ))
 ctlcount=$(( (($nlines * $PART) / $NPART) - $ctloffset ))
-echo "Doing $ctlcount segments starting at number $ctloffset"
+echo "Doing $ctlcount segments starting at number $ctloffset ..."
 
 # Model setup
 modeldir="./models/ads/ads.80-7200-40f.1-3/ads.80-7200-40f.1-3.ci_continuous.8gau"
 mdeffn="./models/ads/ads.80-7200-40f.1-3.ci.mdef"
+[[ -e "$modeldir" ]] || (echo "model not found"; exit 1)
+[[ -e "$mdeffn" ]] || (echo "model def not found"; exit 1)
 
 # Decoder setup
 decoder="./decoderlatest/bin/linux/s3align"
+[[ -e "$decoder" ]] || (echo "$decoder not found"; exit 1)
 
 # Decode
+echo "Decoding ..."
+
 $decoder \
     -logbase 1.0001 \
     -mdeffn $mdeffn \
     -senmgaufn .cont. \
-    -meanfn $modeldir/means \
-    -varfn $modeldir/variances \
-    -mixwfn $modeldir/mixture_weights \
-    -tmatfn $modeldir/transition_matrices \
+    -meanfn ${modeldir}/means \
+    -varfn ${modeldir}/variances \
+    -mixwfn ${modeldir}/mixture_weights \
+    -tmatfn ${modeldir}/transition_matrices \
     -feat 1s_c_d_dd \
     -topn 32 \
     -beam 1e-80 \
@@ -136,11 +143,12 @@ $decoder \
     -ceplen 13 \
     -agc none \
     -cmn current \
-    -phsegdir $PHSEG,CTL \
-    -wdsegdir $PHSEG,CTL \
+    -phsegdir $OUTSEG,CTL \
+    -wdsegdir $OUTSEG,CTL \
     -insentfn $TRANSFN \
     -outsentfn $outtransfn\
     -outctlfn $outctlfn \
     -logfn $logfn
 
+echo "Done decoding."
 exit 0
