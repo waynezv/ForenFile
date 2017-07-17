@@ -2,9 +2,7 @@
 # encoding: utf-8
 
 from __future__ import print_function
-import sys
 import os
-import re
 
 import numpy as np
 import scipy.io as sio
