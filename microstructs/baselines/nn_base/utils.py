@@ -4,6 +4,9 @@ import time
 import os
 import shutil
 import torch
+from torchvision.utils import make_grid
+import matplotlib.pyplot as plt
+import numpy as np
 
 from colorama import Fore
 
@@ -120,3 +123,7 @@ def accuracy(output, target, topk=(1,)):
     correct = pred.eq(target.long())
 
     return correct.float().sum() * (100.0 / target.size(0))
+
+def show_images(imgs):
+    img_grid = make_grid(imgs, normalize=True, padding=100)
+    plt.imshow(np.transpose(img_grid, (1,2,0)), interpolation='nearest')
