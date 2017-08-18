@@ -49,7 +49,7 @@ set_dir = os.path.join(root_dir, 'ImageSets', 'Main')
 img_set_cat = vutil.list_image_sets()
 num_cat = len(img_set_cat)
 
-CLASS = img_set_cat[13]
+CLASS = img_set_cat[15]
 print('Object to detect: ', CLASS)
 
 # Load data
@@ -207,6 +207,7 @@ def main():
         print(*args)
         print(*args, file=f_log)
 
+    log_print('Task: ', CLASS)
     log_print('args:')
     log_print(args)
     print('model:', file=f_log)

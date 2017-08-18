@@ -3,6 +3,7 @@
 
 import pdb
 import math
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -32,9 +33,9 @@ class Spatial_MLP(nn.Module):
         return F.log_softmax(x)
 
 
-class Net(nn.Module):
+class ConvNet(nn.Module):
     def __init__(self):
-        super(Net, self).__init__()
+        super(ConvNet, self).__init__()
         self.conv1 = nn.Conv2d(1, 5, kernel_size=3)
         self.conv2 = nn.Conv2d(5, 10, kernel_size=3)
         self.conv3 = nn.Conv2d(10, 10, kernel_size=3)

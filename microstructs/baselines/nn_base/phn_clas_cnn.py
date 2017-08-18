@@ -24,7 +24,7 @@ from tensorboard_logger import configure, log_value
 
 from tqdm import tqdm
 
-from spatial_mlp import Spatial_MLP as SMLP
+from spatial_mlp import Spatial_MLP as SMLP, ConvNet
 from utils import create_save_folder, save_checkpoint
 
 # BUG: cudnn/cublas runtime error.
@@ -88,6 +88,9 @@ def dataloader(ctlpath, phn, featpath, target='speaker_id',
             data[p].append({'x':x,
                             'spk_id':spk_id,
                             'dia_id':dia_id})
+
+            idx += 1
+
         if shuffle:
             data[p] = np.random.permutation(data[p])
 
@@ -194,14 +197,13 @@ def test(dtest, model, optimizer, epoch, args):
 def main(args):
     # Load data
     ctlpath = '../../feat_falign_extract/phctl_out'
-    phn = 'S'
+    phn = 'AA'
     featpath = './phsegwav_feat'
 
-
     kwargs = {'target': 'speaker_id',
-              'min_nframe': 5, 'max_nframe': 10,
+              'min_nframe': 5, 'max_nframe': 25,
               'batch_size': args.batch_size, 'test_batch_size': args.test_batch_size,
-              'pad': False,
+              'pad': True,
               'shuffle': True}
 
     print('Loading data ...')
@@ -210,8 +212,8 @@ def main(args):
     print('Done in {:.3f}s'.format(time.time()-end))
 
     # Define model
-    # model = Net()
-    model = SMLP()
+    model = ConvNet()
+    # model = SMLP()
     if args.cuda:
         model = torch.nn.DataParallel(model, device_ids=[0,1,2,3]).cuda()
     print(model)
@@ -231,7 +233,10 @@ def main(args):
     if args.evaluate is True:
         pass
 
-    create_save_folder(args.save)
+    if not os.path.exists(args.save):
+        os.makedirs(args.save)
+        print('create folder: ' + Fore.GREEN + args.save + Fore.RESET)
+
 
     # Train, test and log
     print('=> training')

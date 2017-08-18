@@ -38,6 +38,7 @@ class Trainer(object):
             data_time.update(time.time() - end)
 
             # load images on fly
+            # imgs = vutil.load_imgs(input, False)
             imgs = vutil.load_imgs(input, True, (500,500)).reshape(
                 (-1, 3, 500, 500))
             input = torch.from_numpy(imgs).float()
@@ -52,7 +53,6 @@ class Trainer(object):
 
             # compute output
             output = self.model(input_var)
-            # pdb.set_trace()
             loss = self.criterion(output, target_var)
 
             # measure error and record loss
@@ -98,6 +98,7 @@ class Trainer(object):
         end = time.time()
         acc_rate = 0.
         for i, (input, target) in tqdm(enumerate(val_loader), desc='evaluating', leave=True):
+            # imgs = vutil.load_imgs(input, False)
             imgs = vutil.load_imgs(input, True, (500,500)).reshape(
                 (-1, 3, 500, 500))
             input = torch.from_numpy(imgs).float()
