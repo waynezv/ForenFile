@@ -29,7 +29,7 @@ num_f = length(phnlist);
 
 fprintf('Extracting features for wavs in %s\n', wavpath);
 tic;
-parfor idx = 1:num_f
+for idx = 1:num_f
     fpath = phnlist{idx};
     fprintf('%s\n', fpath);
     % Read wav
@@ -44,19 +44,24 @@ parfor idx = 1:num_f
         subplot(131);
         plot(x);
         subplot(132);
-        imagesc(flipud(abs(c)));
+        imagesc(abs(c));
         subplot(133);
-        imagesc(20*log10(abs(flipud(c))+eps)); % in log scale
+        imagesc(20*log10(abs(c)+eps)); % in log scale
         pause;
     end
+%     figure;
+%     imagesc(20*log10(abs(c)+eps));
+%     xlabel('time', 'FontSize', 12, 'Interpreter','latex');
+%     ylabel('frequency', 'FontSize', 12, 'Interpreter','latex');
+%     pause;
     % write coefficients
     [base,fn,~] = fileparts(fpath);
     sfpath = fullfile(savepath, base);
     if ~(exist(sfpath, 'dir'))
         mkdir(sfpath);
     end
-        
-    csvwrite(fullfile(sfpath, strcat(fn, '.constq')), abs(c));
+    
+    %     csvwrite(fullfile(sfpath, strcat(fn, '.constq')), abs(c));
 end
 toc;
 disp('Done!');
