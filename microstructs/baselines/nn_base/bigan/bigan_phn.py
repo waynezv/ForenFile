@@ -1,9 +1,7 @@
 from __future__ import print_function
-import argparse
 import os
 import time
 import pdb
-import math
 import random
 import torch
 import torch.nn as nn
@@ -15,21 +13,9 @@ import torchvision.utils as vutils
 from torch.autograd import Variable
 import itertools
 
-from dataloader import dataloader
-
-parser = argparse.ArgumentParser()
-parser.add_argument('--dataset', help='timit | tidigits | to be added')
-parser.add_argument('--dataroot', help='path to dataset')
-parser.add_argument('--workers', type=int, help='number of data loading workers', default=2)
-parser.add_argument('--batchSize', type=int, default=64, help='input batch size')
-parser.add_argument('--niter', type=int, default=25, help='number of epochs to train for')
-parser.add_argument('--lr', type=float, default=0.0002, help='learning rate, default=0.0002')
-parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
-parser.add_argument('--cuda', action='store_true', help='enables cuda')
-parser.add_argument('--netG', default='', help="path to netG (to continue training)")
-parser.add_argument('--netD', default='', help="path to netD (to continue training)")
-parser.add_argument('--outf', default='.', help='folder to output images and model checkpoints')
-parser.add_argument('--manualSeed', type=int, help='manual seed')
+from args import parser
+from dataloader import phn_dataloader
+from model import _phnetE, _phnetG, _phnetD, weights_init
 
 opt = parser.parse_args()
 print(opt)
@@ -55,115 +41,6 @@ cudnn.benchmark = True
 
 EPS = 1e-12
 
-# custom weights initialization
-def weights_init(m):
-    if isinstance(m, nn.Conv2d):
-        n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-        m.weight.data.normal_(0, math.sqrt(2. / n))
-    elif isinstance(m, nn.ConvTranspose2d):
-        n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-        m.weight.data.normal_(0, math.sqrt(2. / n))
-    elif isinstance(m, nn.BatchNorm2d):
-        m.weight.data.normal_(1.0, 0.02)
-        m.bias.data.zero_()
-        # nn.init.xavier_normal(m.weight.data)
-        # nn.init.xavier_normal(m.bias.data)
-
-class _netG(nn.Module):
-    def __init__(self):
-        super(_netG, self).__init__()
-        self.conv1 = nn.ConvTranspose2d(4, 4, 3, 1, 1)
-        self.relu1 = nn.LeakyReLU(0.2)
-        self.conv2 = nn.ConvTranspose2d(4, 4, 3, 1, 1)
-        self.relu2 = nn.LeakyReLU(0.2)
-        self.drop1 = nn.AlphaDropout(0.5)
-        self.conv3 = nn.ConvTranspose2d(4, 2, 3, 2, 0)
-        self.relu3 = nn.LeakyReLU(0.2)
-        self.conv4 = nn.ConvTranspose2d(2, 1, 3, 2, 0)
-        self.relu4 = nn.LeakyReLU(0.2)
-        self.pool1 = nn.AdaptiveMaxPool2d((257, 15))
-
-    def forward(self, x):
-        x = self.relu1(self.conv1(x))
-        x = self.relu2(self.conv2(x))
-        x = self.drop1(x)
-        x = self.relu3(self.conv3(x))
-        x = self.relu4(self.conv4(x))
-        x = self.pool1(x)
-
-        return x
-
-
-class _netE(nn.Module):
-    def __init__(self):
-        super(_netE, self).__init__()
-        self.conv1 = nn.Conv2d(1, 2, 3, 1, 1)
-        self.relu1 = nn.LeakyReLU(0.2)
-        self.conv2 = nn.Conv2d(2, 4, 3, 1, 1)
-        self.relu2 = nn.LeakyReLU(0.2)
-        self.drop1 = nn.Dropout2d(0.5)
-        self.conv3 = nn.Conv2d(4, 4, 3, (2,1), (0,1))
-        self.relu3 = nn.LeakyReLU(0.2)
-        self.conv4 = nn.Conv2d(4, 4, 3, (2,1), (0,1))
-        self.relu4 = nn.LeakyReLU(0.2)
-        self.pool1 = nn.AdaptiveMaxPool2d((64,1))
-
-    def forward(self, x):
-        x = self.relu1(self.conv1(x))
-        x = self.relu2(self.conv2(x))
-        x = self.drop1(x)
-        x = self.relu3(self.conv3(x))
-        x = self.relu4(self.conv4(x))
-        x = self.pool1(x)
-
-        return x
-
-
-class _netD(nn.Module):
-    def __init__(self):
-        super(_netD, self).__init__()
-        self.infer_x = nn.Sequential(
-            nn.Conv2d(1, 4, 3, 1, 1),
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(4, 4, 3, 1, 1),
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(4, 8, 3, (2,1), (0,1)),
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(8, 16, 3, (2,1), (0,1)),
-            nn.LeakyReLU(0.2),
-            nn.AdaptiveMaxPool2d((16,1))
-        )
-
-        self.infer_z = nn.Sequential(
-            nn.Conv2d(4, 4, (3,1), 1, 1),
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(4, 8, (3,1), (2,1), (0,0)),
-            nn.LeakyReLU(0.2),
-            nn.Dropout2d(0.5),
-            nn.Conv2d(8, 16, (3,1), (2,1), (0,0)),
-            nn.LeakyReLU(0.2),
-            nn.AdaptiveMaxPool2d((16,1))
-        )
-
-        self.infer_xz = nn.Sequential(
-            nn.Conv2d(512, 512, 1, 1, 0),
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(512, 512, 1, 1, 0),
-            nn.LeakyReLU(0.2),
-            nn.Dropout2d(0.5),
-            nn.Conv2d(512, 1, 1, 1, 0),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x, z):
-        x = self.infer_x(x)
-        x = x.view(-1, 256, 1, 1)
-        z = self.infer_z(z)
-        z = z.view(-1, 256, 1, 1)
-        out = self.infer_xz(torch.cat((x,z), 1 ))
-        return out.view(-1)
-
-
 # load data
 ctlpath = './phctl_out'
 phn_list = ('AA', 'AE', 'AH', 'AO', 'AW', 'AY', 'B', 'CH',
@@ -171,7 +48,7 @@ phn_list = ('AA', 'AE', 'AH', 'AO', 'AW', 'AY', 'B', 'CH',
             'IH', 'IY', 'JH', 'K', 'L', 'M', 'N', 'NG',
             'OW', 'OY', 'P', 'R', 'S', 'SH', 'T', 'TH',
             'UH', 'UW', 'V', 'W', 'Y', 'Z', 'ZH')
-featpath = '../phsegwav_feat'
+featpath = '../phsegwav_out_constq_feats'
 
 kwargs = {'target': 'speaker_id',
             # 'min_nframe': , 'max_nframe': ,
@@ -180,28 +57,28 @@ kwargs = {'target': 'speaker_id',
 
 print('Loading data ...')
 end = time.time()
-dtrain = dataloader(ctlpath, phn_list, featpath, **kwargs)
+dtrain = phn_dataloader(ctlpath, phn_list, featpath, **kwargs)
 print('Done. Time: {:.3f}'.format(time.time()-end))
 
-# Define model
-netD = _netD()
-netG = _netG()
-netE = _netE()
+# Init model
+netD = _phnetD()
+netG = _phnetG()
+netE = _phnetE()
 netD.apply(weights_init)
 netG.apply(weights_init)
 netE.apply(weights_init)
 
 criterion = nn.BCELoss()
 
-fixed_z = torch.FloatTensor(1, 4, 64, 1).normal_(0, 1)
+fixed_z = torch.FloatTensor(1, 64, 16, 4).normal_(0, 1)
 label = torch.FloatTensor(1)
 real_label = 1
 fake_label = 0
 
 if opt.cuda:
-    netD = nn.DataParallel(netD, device_ids=[0,1,2,3]).cuda()
-    netG = nn.DataParallel(netG, device_ids=[0,1,2,3]).cuda()
-    netE = nn.DataParallel(netE, device_ids=[0,1,2,3]).cuda()
+    netD = nn.DataParallel(netD, device_ids=[0,1,2]).cuda()
+    netG = nn.DataParallel(netG, device_ids=[0,1,2]).cuda()
+    netE = nn.DataParallel(netE, device_ids=[0,1,2]).cuda()
     criterion.cuda()
     fixed_z = fixed_z.cuda()
 
@@ -215,42 +92,50 @@ optimizer_GE = optim.Adam(itertools.chain(netG.parameters(), netE.parameters()),
 for epoch in range(opt.niter):
     for itr, data in enumerate(dtrain):
         x = data['x']
+        real_label = data['spk_id']
         netD.zero_grad()
         netG.zero_grad()
         netE.zero_grad()
 
-        z = Variable(torch.randn(1, 4, 64, 1).type(torch.cuda.FloatTensor))
-        Gz = netG(z)
+        z_s = Variable(torch.randn(1, 64, 16, 4).type(torch.cuda.FloatTensor))
 
         real_cpu = torch.from_numpy(x).float()
-        x = torch.from_numpy(x).float()
+        x_real = torch.from_numpy(x).float()
         if opt.cuda:
-            x = x.cuda()
-        x = Variable(x)
-        Ex = netE(x)
+            x_real = x_real.cuda()
+        x_real = Variable(x_real)
 
-        output_g = netD(Gz, z)
-        output_e = netD(x, Ex)
+        x_fake = netG(z_s, x_real)
+        z_r = netE(x_real)
+        x_reconstruct = netG(z_r, x_real)
+
+        output_fake = netD(x_fake, z_s)
+        output_real = netD(x_real, z_r)
 
         # loss & back propagation
-        loss_d = -torch.mean(torch.log(output_e+EPS)+torch.log(1-output_g+EPS))
-        loss_ge = -torch.mean(torch.log(output_g+EPS)+torch.log(1-output_e+EPS))
+        if real_label == 0: # target speaker
+            loss_d = -torch.mean(torch.log(output_real+EPS) + torch.log(1-output_fake+EPS))
+            loss_ge = -torch.mean(torch.log(output_fake+EPS) + torch.log(1-output_real+EPS))
+        elif real_label == 1: # other speaker
+            loss_d = -torch.mean(torch.log(1-output_real+EPS) + torch.log(1-output_fake+EPS))
+            loss_ge = -torch.mean(torch.log(output_fake+EPS) + torch.log(output_real+EPS))
+        loss_ae = -torch.mean( torch.norm(x_reconstruct - x_real) + 1.*torch.norm(z_r) )
+        loss_2 = loss_ge + loss_ae
 
-        # loss_d.backward(retain_graph=True)
         loss_d.backward(retain_graph=True)
         optimizer_D.step()
-        loss_ge.backward()
+        loss_2.backward()
         optimizer_GE.step()
 
-        print('[%d/%d][%d/%d] Loss_D: %.4f Loss_GE: %.4f D(G(z), z): %.4f D(x, E(x)): %.4f'
+        print('[%d/%d][%d/%d] Loss_D: %.4f Loss_GE: %.4f loss_AE: %.4f D(G(z), z): %.4f D(x, E(x)): %.4f'
               % (epoch, opt.niter, itr, len(dtrain)*opt.batchSize,
-                 loss_d.data[0], loss_ge.data[0], output_g.data[0], output_e.data[0]))
+                 loss_d.data[0], loss_ge.data[0], loss_ae.data[0], output_fake.data[0], output_real.data[0]))
 
         if (itr % 100) == 0:
               vutils.save_image(real_cpu,
                                 '%s/real_samples.png' % opt.outf,
                                 normalize=True)
-              fake = netG(fixed_z)
+              fake = netG(fixed_z, x_real)
               vutils.save_image(fake.data,
                                 '%s/fake_samples_epoch_%03d.png' % (opt.outf, epoch),
                                 normalize=True)
