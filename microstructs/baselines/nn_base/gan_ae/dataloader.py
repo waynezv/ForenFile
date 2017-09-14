@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.utils.data as data_utils
 from threading import Thread, RLock
+import itertools
 from tqdm import tqdm
 import time
 import pdb
@@ -15,6 +16,22 @@ glob_X = []
 glob_Y = []
 spk_dict = dict()
 
+def dataloader_retriever(dataloader, id):
+    '''
+    Retrieve data for specific spk id.
+    :dataloader (DataLoader)
+    :id (int)
+    <- retrieved data (Torch Tensor)
+    '''
+    x_id = []
+    for x, y in iter(dataloader):
+        id_idx = y.eq(id).nonzero().numpy()
+        if id_idx.size != 0:
+            x = x[id_idx, :, :, :].view(-1, 414, 450)
+            x_id.append([ x[i, :, :].numpy() for i in range(x.size(0)) ])
+
+    x_id = list(itertools.chain.from_iterable( x_id ))
+    return torch.from_numpy(np.array( x_id )).view(-1, 1, 414, 450)
 
 def sen_dataloader(ctl, featpath):
     '''
@@ -60,12 +77,13 @@ class thread_loader(Thread):
         print('Done thread: ', self.threadID)
 
 
-def multithread_loader(ctl, featpath, batch_size=64, num_thread=1):
+def multithread_loader(ctl, featpath, num_to_load=None, batch_size=64, num_thread=1):
     '''
     Multithread data loading.
     '''
     flist = [ l.rstrip('\n') for l in open(ctl) ]
-    flist = flist[:2000]
+    if num_to_load:
+        flist = flist[:num_to_load]
     num_f = len(flist)
     sub_num_f = num_f // num_thread
 

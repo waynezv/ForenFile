@@ -31,6 +31,3 @@ for w in wav_list:
 
         wavfile.write(savefn, fs, wd)
         print('wrote {0:s}'.format(savefn))
-
-
-

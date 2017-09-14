@@ -16,3 +16,5 @@ parser.add_argument('--netG', default='', help="path to netG (to continue traini
 parser.add_argument('--netD', default='', help="path to netD (to continue training)")
 parser.add_argument('--outf', default='.', help='folder to output images and model checkpoints')
 parser.add_argument('--manualSeed', type=int, help='manual seed')
+parser.add_argument('--resume', default='', help='path containing saved models to resume from')
+parser.add_argument('--eval', action='store_true', help='evaluate trained model')
