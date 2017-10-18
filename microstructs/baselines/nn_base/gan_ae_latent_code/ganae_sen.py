@@ -2,7 +2,8 @@
 # encoding: utf-8
 
 from __future__ import print_function
-import os, errno
+import os
+import errno
 import sys
 import random
 import itertools
@@ -33,6 +34,7 @@ mean_l = np.linspace(1, 0, 200)
 mean_h = np.linspace(0, 1, 200)
 variance = np.eye(200)
 
+
 def slerp(val, low, high):
     '''Spherical interpolation. val has a range of 0 to 1.'''
     if val <= 0:
@@ -42,12 +44,13 @@ def slerp(val, low, high):
     elif np.allclose(low, high):
         return low
 
-    omega = np.arccos(np.dot( low/np.linalg.norm(low), high/np.linalg.norm(high) ))
+    omega = np.arccos(np.dot(low / np.linalg.norm(low), high / np.linalg.norm(high)))
     so = np.sin(omega)
-    return np.sin((1.0-val)*omega) / so * low + np.sin(val*omega)/so * high
+    return np.sin((1.0 - val) * omega) / so * low + np.sin(val * omega) / so * high
+
 
 vals = np.linspace(0, 1, 630)
-means = [ slerp(v, mean_l, mean_h) for v in vals ]
+means = [slerp(v, mean_l, mean_h) for v in vals]
 
 # Parse args
 args = parser.parse_args()
@@ -66,7 +69,7 @@ if args.manualSeed is None:
 print("Random Seed: ", args.manualSeed)
 random.seed(args.manualSeed)
 torch.manual_seed(args.manualSeed)
-rng = np.random.RandomState(seed = args.manualSeed)
+rng = np.random.RandomState(seed=args.manualSeed)
 
 if args.cuda:
     torch.cuda.manual_seed_all(args.manualSeed)
@@ -78,7 +81,7 @@ if torch.cuda.is_available() and not args.cuda:
 cudnn.benchmark = True
 
 # Init model
-if args.resume: # Resume from saved checkpoint
+if args.resume:  # Resume from saved checkpoint
     if os.path.isfile(args.resume):
         print("=> loading checkpoint '{}'".format(args.resume))
         checkpoint = torch.load(args.resume)
@@ -101,11 +104,11 @@ if args.resume: # Resume from saved checkpoint
         print("=> loaded model with checkpoint '{}' (epoch {})"
               .format(args.resume, checkpoint['epoch']))
     else:
-        print( "=> no checkpoint found at '{}'"
-              .format( Fore.RED + args.resume + Fore.RESET), file=sys.stderr)
+        print("=> no checkpoint found at '{}'"
+              .format(Fore.RED + args.resume + Fore.RESET), file=sys.stderr)
         sys.exit(0)
 
-else: # Create model from scratch
+else:  # Create model from scratch
     print("=> creating model")
     netE = _senetE()
     netG = _senetG()
@@ -116,9 +119,12 @@ else: # Create model from scratch
     netD.apply(weights_init)
 
     if args.cuda:
-        netE = netE.cuda()
-        netG = netG.cuda()
-        netD = netD.cuda()
+        netE = torch.nn.DataParallel(netE, device_ids=[0, 1, 2, 3]).cuda()
+        netG = torch.nn.DataParallel(netG, device_ids=[0, 1, 2, 3]).cuda()
+        netD = torch.nn.DataParallel(netD, device_ids=[0, 1, 2, 3]).cuda()
+        # netE = netE.cuda()
+        # netG = netG.cuda()
+        # netD = netD.cuda()
 
 print(netE)
 print(netG)
@@ -130,7 +136,7 @@ featpath = '/mnt/data/wenboz/ForenFile_data/sentence_constq_feats'
 
 print('=> loading data ...')
 train_loader, test_loader = multithread_loader(sen_ctl, featpath, num_to_load=args.numLoads, batch_size=args.batchSize,
-                                  use_multithreading=False, num_workers=0)
+                                               use_multithreading=False, num_workers=0)
 
 # Init variables
 fixed_z = torch.FloatTensor(args.batchSize, 2, 1, 1).normal_(0, 1)
@@ -152,24 +158,24 @@ if args.eval:
 
     # PCA z
     if 1:
-        zs = [] # collection of zs
-        for x,y in train_loader:
+        zs = []  # collection of zs
+        for x, y in train_loader:
             z = netE(Variable(x.cuda(), volatile=True))
             zs.append(z.view(-1, 200).data.cpu().numpy())
         # PCA z
         zs = list(itertools.chain.from_iterable(zs))
         zs = np.array(zs).reshape((-1, 200))
-        zs = zs - zs.mean(axis=0) # standarize z
+        zs = zs - zs.mean(axis=0)  # standarize z
         # Covariance matrix
-        z_cov = zs.T.dot(zs) / float(zs.shape[0]-1) # equiv to using np.cov(zs.T)
+        z_cov = zs.T.dot(zs) / float(zs.shape[0] - 1)  # equiv to using np.cov(zs.T)
         # Eigen decomposition
-        evals, evecs = np.linalg.eig(z_cov) # evecs[:,i] == np.linalg.svd(zs) and take v[i,:]
-        eig_pairs = [( np.abs(evals[i]), evecs[:,i] ) for i in range(len(evals))]
-        eig_pairs.sort() # sort the (eigenvalue, eigenvector) tuples from high to low
+        evals, evecs = np.linalg.eig(z_cov)  # evecs[:,i] == np.linalg.svd(zs) and take v[i,:]
+        eig_pairs = [(np.abs(evals[i]), evecs[:, i]) for i in range(len(evals))]
+        eig_pairs.sort()  # sort the (eigenvalue, eigenvector) tuples from high to low
         eig_pairs.reverse()
         # Projection
         P = [ep[1] for ep in eig_pairs]
-        P = np.array(P).reshape((-1, 200)) # each row is eigen vector
+        P = np.array(P).reshape((-1, 200))  # each row is eigen vector
         zsp_full = zs.dot(P.T)
         # Reconstruct X with z components
         X_zfull = netG(Variable(torch.from_numpy(zsp_full).view(-1, 200, 1, 1).float().cuda(), volatile=True))
@@ -179,7 +185,7 @@ if args.eval:
             zsp_topk = zs.dot(P_topk.T)
             X_ztopk = netG(Variable(torch.from_numpy(zsp_topk).view(-1, 200, 1, 1).float().cuda(), volatile=True))
             vutils.save_image(X_ztopk.data,
-                              '{}/reconstructed_samples_ztop{:d}.png'.format(os.path.join(args.outf, 'eval'), k+1),
+                              '{}/reconstructed_samples_ztop{:d}.png'.format(os.path.join(args.outf, 'eval'), k + 1),
                               normalize=False)
         X_normal = netG(Variable(torch.from_numpy(zs).view(-1, 200, 1, 1).float().cuda(), volatile=True))
         X_original = netG(z)
@@ -196,22 +202,21 @@ if args.eval:
                           '{}/reconstructed_samples_zoriginal.png'.format(os.path.join(args.outf, 'eval')),
                           normalize=False)
 
-
     # Classify test
     if 0:
-        trues = [] # true labels
-        probs = [] # probs
-        preds = [] # predicted labels
-        for x, y in train_loader: # iterate over batches
+        trues = []  # true labels
+        probs = []  # probs
+        preds = []  # predicted labels
+        for x, y in train_loader:  # iterate over batches
             trues.append(y.numpy())
             z = netE(Variable(x.cuda(), volatile=True))
             # Compute prob
-            prob_j = [] # probs for zs (in a batch) and all mixtures
-            pred_j = [] # preds for zs (in a batch)
+            prob_j = []  # probs for zs (in a batch) and all mixtures
+            pred_j = []  # preds for zs (in a batch)
             for zi in z:
                 zi = zi.view(-1).data.cpu().numpy()
-                prob_i = [] # probs for zi
-                for m in means: # iterate over mixtures
+                prob_i = []  # probs for zi
+                for m in means:  # iterate over mixtures
                     p = stats.multivariate_normal.pdf(zi, m, variance)
                     prob_i.append(p)
                 prob_j.append(prob_i)
@@ -254,16 +259,16 @@ gen_iterations = 0
 Diters = 5
 for epoch in range(args.niter):
     data_iter = iter(train_loader)
-    i = 0 # data counter
+    i = 0  # data counter
     while i < len(train_loader):
-        for p in netD.parameters(): # reset requires_grad
-            p.requires_grad = True # they are set to False below in netE update
+        for p in netD.parameters():  # reset requires_grad
+            p.requires_grad = True  # they are set to False below in netE update
         for p in netE.parameters():
             p.requires_grad = False
 
         # Train the discriminator Diters times
-        j = 0 # D update counter
-        while (j < Diters) and (i < len(train_loader)) :
+        j = 0  # D update counter
+        while (j < Diters) and (i < len(train_loader)):
             j += 1
             ############################
             # (1) Update netD
@@ -272,11 +277,11 @@ for epoch in range(args.niter):
             i += 1
 
             # Train with real
-            x_real_cpu = x # torch tensor on cpu
+            x_real_cpu = x  # torch tensor on cpu
             x_real = x
             if args.cuda:
                 x_real = x_real.cuda()
-            x_real = Variable(x_real, volatile=True) # volatile for inference only
+            x_real = Variable(x_real, volatile=True)  # volatile for inference only
 
             netD.zero_grad()
             zr = netE(x_real)
@@ -290,8 +295,8 @@ for epoch in range(args.niter):
             zf = torch.zeros(x_real.size(0), 200, 1, 1)
             zfi = 0
             for yi in y:
-                mu = means[yi] # pick mean according to label
-                zf[zfi, :, :, :] = torch.from_numpy( rng.multivariate_normal(mu, variance) ).float().view(200,1,1)
+                mu = means[yi]  # pick mean according to label
+                zf[zfi, :, :, :] = torch.from_numpy(rng.multivariate_normal(mu, variance)).float().view(200, 1, 1)
                 zfi += 1
 
             # Uncomment for gender priors
@@ -320,18 +325,18 @@ for epoch in range(args.niter):
         # (2) Update netE
         ############################
         for p in netD.parameters():
-            p.requires_grad = False # to avoid computation
+            p.requires_grad = False  # to avoid computation
         for p in netE.parameters():
             p.requires_grad = True
 
         if i < len(train_loader):
             x, y = data_iter.next()
             i += 1
-        else: # when data runs out, get new iter
+        else:  # when data runs out, get new iter
             new_data_iter = iter(train_loader)
             x, y = new_data_iter.next()
 
-        x_real_cpu = x # torch tensor on cpu
+        x_real_cpu = x  # torch tensor on cpu
         x_real = x
         if args.cuda:
             x_real = x_real.cuda()
@@ -379,7 +384,7 @@ for epoch in range(args.niter):
             errD.data[0], errD_real.data[0], errD_fake.data[0], errE.data[0], errG.data[0]))
 
         # Save images & test
-        if (gen_iterations % 200) == 0: # ~ 10 epoch
+        if (gen_iterations % 200) == 0:  # ~ 10 epoch
             vutils.save_image(x_real_cpu,
                               '{}/real_samples_gen_{:03d}.png'.format(os.path.join(args.outf, 'images'), gen_iterations),
                               normalize=False)
@@ -391,8 +396,8 @@ for epoch in range(args.niter):
             zf = torch.zeros(x_real.size(0), 200, 1, 1)
             zfi = 0
             for yi in y:
-                mu = means[yi] # pick mean according to label
-                zf[zfi, :, :, :] = torch.from_numpy( rng.multivariate_normal(mu, variance) ).float().view(200,1,1)
+                mu = means[yi]  # pick mean according to label
+                zf[zfi, :, :, :] = torch.from_numpy(rng.multivariate_normal(mu, variance)).float().view(200, 1, 1)
                 zfi += 1
 
             # zf = torch.zeros(x_real.size(0), 2, 1, 1)
@@ -412,16 +417,16 @@ for epoch in range(args.niter):
                               normalize=False)
 
             # Test
-            trues = [] # true labels
-            preds = [] # predicted labels
-            for x, y in test_loader: # iterate over batches
+            trues = []  # true labels
+            preds = []  # predicted labels
+            for x, y in test_loader:  # iterate over batches
                 trues.append(y.numpy())
                 z = netE(Variable(x.cuda(), volatile=True))
                 # Compute prob
-                pred_j = [] # preds for zs (in a batch)
+                pred_j = []  # preds for zs (in a batch)
                 for zi in z:
-                    prob_i = [] # probs for zi
-                    for m in means: # iterate over mixtures
+                    prob_i = []  # probs for zi
+                    for m in means:  # iterate over mixtures
                         p = stats.multivariate_normal.pdf(zi.view(-1).data.cpu().numpy(), m, variance)
                         prob_i.append(p)
                     pred_j.append(np.argmax(prob_i))
