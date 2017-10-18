@@ -1,4 +1,5 @@
 *DS_Store
+phctl_out/
 # === C++ ===
 # Compiled Object files
 *.slo

@@ -6,7 +6,6 @@ import math
 import torch
 from torch.autograd import Variable, grad
 import torch.nn as nn
-import torch.nn.functional as F
 
 class _senetE(nn.Module):
     '''
@@ -16,32 +15,29 @@ class _senetE(nn.Module):
         super(_senetE, self).__init__()
         # x 1*414*450
         self.encoder = nn.Sequential(
-            nn.Conv2d(1, 64, 3, 2, 0, bias=False), #200
+            nn.Conv2d(1, 64, 4, 2, 1, bias=False), #200
             nn.BatchNorm2d(64),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(64, 128, 3, 2, 0, bias=False), #100
+            nn.Conv2d(64, 128, 4, 2, 1, bias=False), #100
             nn.BatchNorm2d(128),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(128, 256, 3, 2, 0, bias=False), #50
+            nn.Conv2d(128, 256, 4, 2, 1, bias=False), #50
             nn.BatchNorm2d(256),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(256, 512, 3, 2, 0, bias=False), #25
+            nn.Conv2d(256, 512, 4, 2, 1, bias=False), #25
             nn.BatchNorm2d(512),
-            nn.AdaptiveMaxPool2d((1, 1)), # 512*1*1
             nn.LeakyReLU(0.2),
-            nn.Conv2d(512, 256, 1, 1, 0, bias=False), # 256*1*1
-            nn.BatchNorm2d(256),
+            nn.Conv2d(512, 1024, 4, 2, 1, bias=False), #12
+            nn.BatchNorm2d(1024),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(256, 128, 1, 1, 0, bias=False), # 128*1*1
-            nn.BatchNorm2d(128),
+            nn.Conv2d(1024, 2048, 4, 2, 1, bias=False), #6
+            nn.BatchNorm2d(2048),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(128, 64, 1, 1, 0, bias=False), # 64*1*1
-            nn.BatchNorm2d(64),
+            nn.Conv2d(2048, 2048, 4, 2, 1, bias=False), #3
+            nn.BatchNorm2d(2048),
+            nn.AdaptiveMaxPool2d((1, 1)), # 2048*1*1
             nn.LeakyReLU(0.2),
-            nn.Conv2d(64, 16, 1, 1, 0, bias=False), # 16*1*1
-            nn.BatchNorm2d(16),
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(16, 3, 1, 1, 0, bias=False) # Ex 2*1*1
+            nn.Conv2d(2048, 200, 1, 1, 0, bias=False) # 200*1*1
         )
 
     def forward(self, x):
@@ -55,33 +51,33 @@ class _senetG(nn.Module):
     '''
     def __init__(self):
         super(_senetG, self).__init__()
-        # z 2*1*1
+        # z 200*1*1
         self.generator = nn.Sequential(
-            nn.ConvTranspose2d(3, 16, 4, 2, 1, bias=False), #2
-            nn.BatchNorm2d(16),
+            nn.ConvTranspose2d(200, 2048, 4, 2, 1, bias=False), #2
+            nn.BatchNorm2d(2048),
             nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(16, 64, 4, 2, 1, bias=False), #4
-            nn.BatchNorm2d(64),
+            nn.ConvTranspose2d(2048, 2048, 4, 2, 1, bias=False), #4
+            nn.BatchNorm2d(2048),
             nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(64, 128, 4, 2, 1, bias=False), #8
-            nn.BatchNorm2d(128),
+            nn.ConvTranspose2d(2048, 2048, 4, 2, 1, bias=False), #8
+            nn.BatchNorm2d(2048),
             nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(128, 256, 4, 2, 1, bias=False), #16
+            nn.ConvTranspose2d(2048, 1024, 4, 2, 1, bias=False), #16
+            nn.BatchNorm2d(1024),
+            nn.LeakyReLU(0.2),
+            nn.ConvTranspose2d(1024, 512, 4, 2, 1, bias=False), #32
+            nn.BatchNorm2d(512),
+            nn.LeakyReLU(0.2),
+            nn.ConvTranspose2d(512, 256, 4, 2, 1, bias=False), #64
             nn.BatchNorm2d(256),
             nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(256, 128, 4, 2, 1, bias=False), #32
+            nn.ConvTranspose2d(256, 128, 4, 2, 1, bias=False), #128
             nn.BatchNorm2d(128),
             nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(128, 64, 4, 2, 1, bias=False), #64
+            nn.ConvTranspose2d(128, 64, 4, 2, 1, bias=False), #256
             nn.BatchNorm2d(64),
             nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(64, 32, 4, 2, 1, bias=False), #128
-            nn.BatchNorm2d(32),
-            nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(32, 16, 4, 2, 1, bias=False), #256
-            nn.BatchNorm2d(16),
-            nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(16, 1, 4, 2, 1, bias=False), #512
+            nn.ConvTranspose2d(64, 1, 4, 2, 1, bias=False), #512
             nn.BatchNorm2d(1),
             nn.AdaptiveMaxPool2d((414, 450)) # Gz 1*414*450
         )
@@ -227,17 +223,15 @@ class _codeNetD(nn.Module):
     '''
     def __init__(self):
         super(_codeNetD, self).__init__()
-        # z 2*1*1
+        # z 200*1*1
         self.classifier = nn.Sequential(
-            nn.Conv2d(3, 64, 1, 1, 0),
+            nn.Conv2d(200, 2000, 1, 1, 0),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(64, 128, 1, 1, 0),
+            nn.Conv2d(2000, 2000, 1, 1, 0),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(128, 128, 1, 1, 0),
+            nn.Conv2d(2000, 2000, 1, 1, 0),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(128, 64, 1, 1, 0),
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(64, 1, 1, 1, 0)
+            nn.Conv2d(2000, 1, 1, 1, 0)
         )
 
     def forward(self, x):
@@ -409,7 +403,7 @@ def weights_init(m):
         # nn.init.xavier_normal(m.bias.data)
 
 
-def calc_gradient_penalty(netD, real_data, fake_data):
+def calc_gradient_penalty(netD, real_data, fake_data, penalty=10):
     '''
     Calculate gradient penalty for WGAN-GP.
     '''
@@ -428,6 +422,6 @@ def calc_gradient_penalty(netD, real_data, fake_data):
                                     create_graph=True,
                                     only_inputs=True)[0]
 
-    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * 10
+    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * penalty
 
     return gradient_penalty

@@ -12,9 +12,19 @@ from tqdm import tqdm
 import time
 import pdb
 
-glob_X = []
-glob_Y = []
-spk_dict = dict()
+glob_X = [] # global container for all feature Xs
+glob_Y = [] # global container for all label Ys
+spk_dict = dict() # dictionary {speaker name: speaker id}
+spk_count = dict() # spk_id : count
+gender_dict = {'f':0, 'm':1} # dictionary for male or female
+
+def save_speaker_dict(fn):
+    out = "speaker\tid\n"
+    for k in spk_dict:
+        out += "{}\t{}\n".format(k, spk_dict[k])
+
+    with open(fn, 'w') as f:
+        f.write(out)
 
 def dataloader_retriever(dataloader, spk_id):
     '''
@@ -23,7 +33,7 @@ def dataloader_retriever(dataloader, spk_id):
     :spk_id (int)
     <- retrieved data (Torch Tensor)
     '''
-    x_id = []
+    x_id = [] # store feature (x)s for speaker (id)
     for x, y in iter(dataloader):
         id_idx = y.eq(spk_id).nonzero().numpy()
         if id_idx.size != 0:
@@ -40,23 +50,29 @@ def sen_dataloader(ctl, featpath):
     '''
     Load features for sentence segments and labels.
     '''
-    X = []
-    Y = []
+    X = [] # store feature Xs
+    Y = [] # store label Ys
     for s in tqdm(ctl, desc='loading', leave=True):
-        # TODO: sync dict writing
         spk_name = s.split('/')[2]
+
+        # Uncomment for gender only label
+        # gender = spk_name[0] # get female or male
+        # spk_id = gender_dict[gender]
+
+        # Uncomment for multiclass label
         if spk_name in spk_dict:
             spk_id = spk_dict[spk_name]
+            spk_count[spk_id] += 1
         else:
             spk_dict[spk_name] = len(spk_dict)
             spk_id = spk_dict[spk_name]
+            spk_count[spk_id] = 1
 
         fn = os.path.join(featpath, s)
         feat = np.loadtxt(fn, delimiter=',')
         X.append( feat )
         Y.append( spk_id )
     return X, Y
-
 
 class thread_loader(Thread):
     '''
@@ -71,8 +87,9 @@ class thread_loader(Thread):
 
     def run(self):
         print('Start thread: ', self.threadID)
+        # Get subset of Xs and Ys in each thread
         sub_x, sub_y = self.loader_func(*self.args)
-        # sync putting data
+        # Sync putting data
         self.lock.acquire()
         glob_X.append(sub_x)
         glob_Y.append(sub_y)
@@ -80,49 +97,93 @@ class thread_loader(Thread):
         print('Done thread: ', self.threadID)
 
 
-def multithread_loader(ctl, featpath, num_to_load=None, batch_size=64, num_thread=1):
+def multithread_loader(ctl, featpath, num_to_load=None, batch_size=64, use_multithreading=False, num_thread=1, num_workers=1, shuffle=True):
     '''
     Multithread data loading.
     '''
     flist = [ l.rstrip('\n') for l in open(ctl) ]
     if num_to_load:
         flist = flist[:num_to_load]
-    num_f = len(flist)
-    sub_num_f = num_f // num_thread
 
-    threads_pool = []
-    tlock = RLock()
-    # create threads
-    for i in range(num_thread):
-        sub_list = flist[i*sub_num_f: (i+1)*sub_num_f]
-        args = (sub_list, featpath)
-        threads_pool.append(thread_loader(i, tlock, sen_dataloader, args))
+    if use_multithreading == False: # if not using multithread
+        sX, sY = sen_dataloader(flist, featpath)
+        X = np.asarray(sX, dtype=float).reshape((-1, 1, 414, 450))
+        Y = np.asarray(sY, dtype=int).reshape((-1))
 
-    end = time.time()
-    # start threads
-    for t in threads_pool:
-        t.start()
+    elif use_multithreading == True: # if use multithread
+        num_f = len(flist)
+        sub_num_f = num_f // num_thread
 
-    # join threads
-    for t in threads_pool:
-        t.join()
+        threads_pool = []
+        tlock = RLock()
+        # create threads
+        for i in range(num_thread):
+            sub_list = flist[i*sub_num_f: (i+1)*sub_num_f]
+            args = (sub_list, featpath)
+            threads_pool.append(thread_loader(i, tlock, sen_dataloader, args))
 
-    print('Used {:.3f} s'.format(time.time()-end))
+        end = time.time()
+        # start threads
+        for t in threads_pool:
+            t.start()
 
-    # batch data
-    X = np.asarray(glob_X[0], dtype=float).reshape((-1, 1, 414, 450))
-    X = torch.from_numpy(X).float()
-    Y = np.asarray(glob_Y[0], dtype=int).reshape((-1))
-    Y = torch.from_numpy(Y).int()
+        # join threads
+        for t in threads_pool:
+            t.join()
+
+        print('Used {:.3f} s'.format(time.time()-end))
+
+
+        X = np.asarray(glob_X[0], dtype=float).reshape((-1, 1, 414, 450))
+        Y = np.asarray(glob_Y[0], dtype=int).reshape((-1))
 
     # normalize data
     X = (X - X.mean()) / X.std() # center
     # X = (X - X.min()) / (X.max() - X.min()) # [0, 1]
     # X = 2. * (X - X.min()) / (X.max() - X.min()) - 1. # [-1, 1]
-    train = data_utils.TensorDataset(X, Y)
-    train_loader = data_utils.DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=32)
 
-    return train_loader
+    # split data
+    Xtrain = []
+    Ytrain = []
+    Xtest = []
+    Ytest = []
+    split_ratio = 0.8
+    gcount = 0
+    while gcount < Y.shape[0]:
+        for s in spk_count:
+            count  = spk_count[s]
+            train_count = int(np.floor(count * split_ratio))
+            sub_cnt = 0
+            while sub_cnt < train_count:
+                Xtrain.append(X[gcount])
+                Ytrain.append(Y[gcount])
+                sub_cnt += 1
+                gcount += 1
+            while sub_cnt < count:
+                Xtest.append(X[gcount])
+                Ytest.append(Y[gcount])
+                sub_cnt += 1
+                gcount += 1
+
+    # save speaker dict
+    # save_speaker_dict('speaker_dict.ctl')
+
+    # batch data
+    Xtrain = np.array(Xtrain)
+    Ytrain = np.array(Ytrain)
+    Xtest  = np.array(Xtest)
+    Ytest  = np.array(Ytest)
+    Xtrain = torch.from_numpy(Xtrain).float()
+    Ytrain = torch.from_numpy(Ytrain).int()
+    Xtest  = torch.from_numpy(Xtest).float()
+    Ytest  = torch.from_numpy(Ytest).int()
+
+    train = data_utils.TensorDataset(Xtrain, Ytrain)
+    train_loader = data_utils.DataLoader(train, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+    test = data_utils.TensorDataset(Xtest, Ytest)
+    test_loader = data_utils.DataLoader(test, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+
+    return train_loader, test_loader
 
 
 def phn_dataloader(ctlpath, phn_list, featpath, target='speaker_id',
