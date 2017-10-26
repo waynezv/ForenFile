@@ -1,11 +1,81 @@
 #!/usr/bin/env python
 # encoding: utf-8
 
-import pdb
 import math
 import torch
 from torch.autograd import Variable, grad
 import torch.nn as nn
+import pdb
+
+
+def make_onehot(y, C):
+    '''
+    Make onehot vector from label y.
+
+    :y: [torch.(cuda).LongTensor][batchSize] labels
+    :C: [int][1] number of classes
+    <- [torch.(cuda).FloatTensor][batchSize * numClass] onehot vectors
+    '''
+    y_onehot = torch.FloatTensor(y.size(0), C)
+    return y_onehot.zero_().scatter_(1, y.view(-1, 1), 1)
+
+
+class _zpreConditioner(nn.Module):
+    '''
+    Pre-conditioner to output latent z given one-hot pre-z.
+    '''
+    def __init__(self, num_class):
+        super(_zpreConditioner, self).__init__()
+        self.preconditioner = nn.Sequential(
+            nn.Linear(num_class, 1000),
+            nn.BatchNorm1d(1000),
+            nn.LeakyReLU(0.2),
+            nn.Linear(1000, 1000),
+            nn.BatchNorm1d(1000),
+            nn.LeakyReLU(0.2),
+            nn.Linear(1000, 1000),
+            nn.BatchNorm1d(1000),
+            nn.LeakyReLU(0.2)
+        )
+        self.project_mean = nn.Sequential(
+            nn.Linear(1000, 200)
+        )
+        self.project_var = nn.Sequential(
+            nn.Linear(1000, 200)
+        )
+
+    def forward(self, x):
+        h = self.preconditioner(x)
+        mean, logvar = self.project_mean(h), self.project_var(h)
+        var = logvar.exp()
+        eps = torch.normal(torch.zeros(*var.size())).cuda()  # N(0, I)
+        # Reparameterization trick
+        z = mean + var * Variable(eps, requires_grad=False)  # var is std
+        return z.view(-1, 200, 1, 1), mean, var
+
+
+class _codeNetD(nn.Module):
+    '''
+    Discriminator for latent codes.
+
+    '''
+    def __init__(self):
+        super(_codeNetD, self).__init__()
+        # z 200*1*1
+        self.classifier = nn.Sequential(
+            nn.Conv2d(200, 1000, 1, 1, 0),
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(1000, 1000, 1, 1, 0),
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(1000, 1000, 1, 1, 0),
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(1000, 1, 1, 1, 0)
+        )
+
+    def forward(self, x):
+        x = self.classifier(x)
+        return x.view(-1)
+
 
 class _senetE(nn.Module):
     '''
@@ -15,29 +85,29 @@ class _senetE(nn.Module):
         super(_senetE, self).__init__()
         # x 1*414*450
         self.encoder = nn.Sequential(
-            nn.Conv2d(1, 64, 4, 2, 1, bias=False), #200
+            nn.Conv2d(1, 64, 4, 2, 1, bias=False),  # 200
             nn.BatchNorm2d(64),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(64, 128, 4, 2, 1, bias=False), #100
+            nn.Conv2d(64, 128, 4, 2, 1, bias=False),  # 100
             nn.BatchNorm2d(128),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(128, 256, 4, 2, 1, bias=False), #50
+            nn.Conv2d(128, 256, 4, 2, 1, bias=False),  # 50
             nn.BatchNorm2d(256),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(256, 512, 4, 2, 1, bias=False), #25
+            nn.Conv2d(256, 512, 4, 2, 1, bias=False),  # 25
             nn.BatchNorm2d(512),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(512, 1024, 4, 2, 1, bias=False), #12
+            nn.Conv2d(512, 1024, 4, 2, 1, bias=False),  # 12
             nn.BatchNorm2d(1024),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(1024, 2048, 4, 2, 1, bias=False), #6
+            nn.Conv2d(1024, 2048, 4, 2, 1, bias=False),  # 6
             nn.BatchNorm2d(2048),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(2048, 2048, 4, 2, 1, bias=False), #3
+            nn.Conv2d(2048, 2048, 4, 2, 1, bias=False),  # 3
             nn.BatchNorm2d(2048),
-            nn.AdaptiveMaxPool2d((1, 1)), # 2048*1*1
+            nn.AdaptiveMaxPool2d((1, 1)),  # 2048*1*1
             nn.LeakyReLU(0.2),
-            nn.Conv2d(2048, 200, 1, 1, 0, bias=False) # 200*1*1
+            nn.Conv2d(2048, 200, 1, 1, 0, bias=False)  # 200*1*1
         )
 
     def forward(self, x):
@@ -53,33 +123,30 @@ class _senetG(nn.Module):
         super(_senetG, self).__init__()
         # z 200*1*1
         self.generator = nn.Sequential(
-            nn.ConvTranspose2d(200, 2048, 4, 2, 1, bias=False), #2
+            nn.ConvTranspose2d(200, 2048, 4, 2, 0, bias=False),  # 4
             nn.BatchNorm2d(2048),
             nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(2048, 2048, 4, 2, 1, bias=False), #4
+            nn.ConvTranspose2d(2048, 2048, 4, 2, 1, bias=False),  # 8
             nn.BatchNorm2d(2048),
             nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(2048, 2048, 4, 2, 1, bias=False), #8
-            nn.BatchNorm2d(2048),
-            nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(2048, 1024, 4, 2, 1, bias=False), #16
+            nn.ConvTranspose2d(2048, 1024, 4, 2, 1, bias=False),  # 16
             nn.BatchNorm2d(1024),
             nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(1024, 512, 4, 2, 1, bias=False), #32
+            nn.ConvTranspose2d(1024, 512, 4, 2, 1, bias=False),  # 32
             nn.BatchNorm2d(512),
             nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(512, 256, 4, 2, 1, bias=False), #64
+            nn.ConvTranspose2d(512, 256, 4, 2, 1, bias=False),  # 64
             nn.BatchNorm2d(256),
             nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(256, 128, 4, 2, 1, bias=False), #128
+            nn.ConvTranspose2d(256, 128, 4, 2, 1, bias=False),  # 128
             nn.BatchNorm2d(128),
             nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(128, 64, 4, 2, 1, bias=False), #256
+            nn.ConvTranspose2d(128, 64, 4, 2, 1, bias=False),  # 256
             nn.BatchNorm2d(64),
             nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(64, 1, 4, 2, 1, bias=False), #512
+            nn.ConvTranspose2d(64, 1, 4, 2, 1, bias=False),  # 512
             nn.BatchNorm2d(1),
-            nn.AdaptiveMaxPool2d((414, 450)) # Gz 1*414*450
+            nn.AdaptiveMaxPool2d((414, 450))  # Gz 1*414*450
         )
 
     def forward(self, x):
@@ -216,29 +283,6 @@ class _codeNetG(nn.Module):
         return x
 
 
-class _codeNetD(nn.Module):
-    '''
-    Discriminator for latent codes.
-
-    '''
-    def __init__(self):
-        super(_codeNetD, self).__init__()
-        # z 200*1*1
-        self.classifier = nn.Sequential(
-            nn.Conv2d(200, 2000, 1, 1, 0),
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(2000, 2000, 1, 1, 0),
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(2000, 2000, 1, 1, 0),
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(2000, 1, 1, 1, 0)
-        )
-
-    def forward(self, x):
-        x = self.classifier(x)
-        return x.view(-1)
-
-
 class _codeNetDy(nn.Module):
     '''
     Discriminator for latent y.
@@ -352,7 +396,7 @@ class _phnetD(nn.Module):
             nn.LeakyReLU(0.2),
             nn.Conv2d(16, 16, 3, 1, 1),
             nn.LeakyReLU(0.2),
-            nn.AdaptiveMaxPool2d((16,1))
+            nn.AdaptiveMaxPool2d((16, 1))
             # 16*16*1
         )
 
@@ -364,7 +408,7 @@ class _phnetD(nn.Module):
             nn.LeakyReLU(0.2),
             nn.Conv2d(32, 16, 3, 1, 1),
             nn.LeakyReLU(0.2),
-            nn.AdaptiveMaxPool2d((16,1))
+            nn.AdaptiveMaxPool2d((16, 1))
             # 16*16*1
         )
 
@@ -382,7 +426,7 @@ class _phnetD(nn.Module):
         x = x.view(-1, 256)
         z = self.infer_z(z)
         z = z.view(-1, 256)
-        out = self.infer_xz(torch.cat((x,z), 1))
+        out = self.infer_xz(torch.cat((x, z), 1))
         return out.view(-1)
 
 
@@ -417,10 +461,10 @@ def calc_gradient_penalty(netD, real_data, fake_data, penalty=10):
     disc_interpolates = netD(interpolates)
 
     gradients = grad(outputs=disc_interpolates, inputs=interpolates,
-                                    grad_outputs=Variable(torch.ones(disc_interpolates.size()).cuda()),
-                                    retain_graph=True,
-                                    create_graph=True,
-                                    only_inputs=True)[0]
+                     grad_outputs=Variable(torch.ones(disc_interpolates.size()).cuda()),
+                     retain_graph=True,
+                     create_graph=True,
+                     only_inputs=True)[0]
 
     gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * penalty
 

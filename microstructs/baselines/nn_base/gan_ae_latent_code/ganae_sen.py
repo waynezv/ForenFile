@@ -7,10 +7,11 @@ import errno
 import sys
 import random
 import itertools
+import time
+from tqdm import tqdm
 import pdb
 
 import numpy as np
-from scipy import stats
 
 import torch
 import torch.nn.parallel
@@ -26,31 +27,8 @@ from colorama import Fore
 from advae_essentials.args import parser
 from advae_essentials.dataloader import multithread_loader
 from advae_essentials.model_large_code import _codeNetD, _senetE, _senetG, \
-    weights_init, calc_gradient_penalty
+    _zpreConditioner, make_onehot, weights_init, calc_gradient_penalty
 from advae_essentials.utils import save_checkpoint, ScoreMeter
-
-# Generate code priors
-mean_l = np.linspace(1, 0, 200)
-mean_h = np.linspace(0, 1, 200)
-variance = np.eye(200)
-
-
-def slerp(val, low, high):
-    '''Spherical interpolation. val has a range of 0 to 1.'''
-    if val <= 0:
-        return low
-    elif val >= 1:
-        return high
-    elif np.allclose(low, high):
-        return low
-
-    omega = np.arccos(np.dot(low / np.linalg.norm(low), high / np.linalg.norm(high)))
-    so = np.sin(omega)
-    return np.sin((1.0 - val) * omega) / so * low + np.sin(val * omega) / so * high
-
-
-vals = np.linspace(0, 1, 630)
-means = [slerp(v, mean_l, mean_h) for v in vals]
 
 # Parse args
 args = parser.parse_args()
@@ -78,7 +56,9 @@ if args.cuda:
 if torch.cuda.is_available() and not args.cuda:
     print("WARNING: You have a CUDA device, so you should probably run with --cuda")
 
-cudnn.benchmark = True
+# CUDNN
+# cudnn.benchmark = True
+cudnn.fastest = True
 
 # Init model
 if args.resume:  # Resume from saved checkpoint
@@ -90,17 +70,15 @@ if args.resume:  # Resume from saved checkpoint
         print(old_args)
 
         print("=> creating model")
-        netE = _senetE()
-        netG = _senetG()
-        netD = _codeNetD()
-        if args.cuda:
-            netE = netE.cuda()
-            netG = netG.cuda()
-            netD = netD.cuda()
+        netE = _senetE().cuda()
+        netG = _senetG().cuda()
+        netD = _codeNetD().cuda()
+        netP = _zpreConditioner(args.topk_class).cuda()
 
         netE.load_state_dict(checkpoint['netE_state_dict'])
         netG.load_state_dict(checkpoint['netG_state_dict'])
         netD.load_state_dict(checkpoint['netD_state_dict'])
+        netP.load_state_dict(checkpoint['netP_state_dict'])
         print("=> loaded model with checkpoint '{}' (epoch {})"
               .format(args.resume, checkpoint['epoch']))
     else:
@@ -110,45 +88,41 @@ if args.resume:  # Resume from saved checkpoint
 
 else:  # Create model from scratch
     print("=> creating model")
-    netE = _senetE()
-    netG = _senetG()
-    netD = _codeNetD()
+    netE = _senetE().cuda()
+    netG = _senetG().cuda()
+    netD = _codeNetD().cuda()
+    netP = _zpreConditioner(args.topk_class).cuda()
+    # netE = torch.nn.DataParallel(netE, device_ids=[0, 1, 2, 3]).cuda()
+    # netG = torch.nn.DataParallel(netG, device_ids=[0, 1, 2, 3]).cuda()
+    # netD = torch.nn.DataParallel(netD, device_ids=[0, 1, 2, 3]).cuda()
+    # netP = torch.nn.DataParallel(netP, device_ids=[0, 1, 2, 3]).cuda()
 
     netE.apply(weights_init)
     netG.apply(weights_init)
     netD.apply(weights_init)
+    netP.apply(weights_init)
 
-    if args.cuda:
-        netE = torch.nn.DataParallel(netE, device_ids=[0, 1, 2, 3]).cuda()
-        netG = torch.nn.DataParallel(netG, device_ids=[0, 1, 2, 3]).cuda()
-        netD = torch.nn.DataParallel(netD, device_ids=[0, 1, 2, 3]).cuda()
-        # netE = netE.cuda()
-        # netG = netG.cuda()
-        # netD = netD.cuda()
 
 print(netE)
 print(netG)
 print(netD)
+print(netP)
 
 # Load data
 sen_ctl = 'all_sentence_constq.ctl'
-featpath = '/mnt/data/wenboz/ForenFile_data/sentence_constq_feats'
+# featpath = '/mnt/data/wenboz/ForenFile_data/sentence_constq_feats'
+featpath = '/home/wenboz/ProJEX/data_root/sentence_constq_feats'
 
-print('=> loading data ...')
-train_loader, test_loader = multithread_loader(sen_ctl, featpath, num_to_load=args.numLoads, batch_size=args.batchSize,
+print('=> loading data for task ' + Fore.GREEN + '{}'.format(args.label) + Fore.RESET)
+train_loader, test_loader = multithread_loader(sen_ctl, featpath, label=args.label, topk_class=args.topk_class, num_to_load=args.numLoads, batch_size=args.batchSize,
                                                use_multithreading=False, num_workers=0)
 
 # Init variables
-fixed_z = torch.FloatTensor(args.batchSize, 2, 1, 1).normal_(0, 1)
-one = torch.FloatTensor([1])
-mone = one * -1
+y_orac = torch.arange(0, args.topk_class).type(torch.LongTensor)  # oracle labels [0, topk_class)
+zpre_orac = make_onehot(y_orac, args.topk_class)  # onehot vectors
+one = torch.FloatTensor([1]).cuda()  # gradient for Wasserstein loss
+mone = torch.FloatTensor([-1]).cuda()
 EPS = 1e-12
-
-if args.cuda:
-    fixed_z = fixed_z.cuda()
-    one, mone = one.cuda(), mone.cuda()
-
-fixed_z = Variable(fixed_z)
 
 # Evaluate model
 if args.eval:
@@ -204,130 +178,93 @@ if args.eval:
 
     # Classify test
     if 0:
-        trues = []  # true labels
-        probs = []  # probs
-        preds = []  # predicted labels
-        for x, y in train_loader:  # iterate over batches
-            trues.append(y.numpy())
-            z = netE(Variable(x.cuda(), volatile=True))
-            # Compute prob
-            prob_j = []  # probs for zs (in a batch) and all mixtures
-            pred_j = []  # preds for zs (in a batch)
-            for zi in z:
-                zi = zi.view(-1).data.cpu().numpy()
-                prob_i = []  # probs for zi
-                for m in means:  # iterate over mixtures
-                    p = stats.multivariate_normal.pdf(zi, m, variance)
-                    prob_i.append(p)
-                prob_j.append(prob_i)
-                pred_j.append(np.argmax(prob_i))
-            probs.append(prob_j)
-            preds.append(pred_j)
-
-        # Compute accuracy
-        probs = list(itertools.chain.from_iterable(probs))
-        trues = list(itertools.chain.from_iterable(trues))
-        preds = list(itertools.chain.from_iterable(preds))
-        pred_error = 1. - np.count_nonzero(trues == preds) / float(len(trues))
-        print('Error: {:.4f}'.format(pred_error))
+        pass
 
     print('Done.')
     sys.exit(0)
 
-# Setup optimizer
-optimizer_E = optim.Adam(netE.parameters(), lr=0.00002, betas=(0.9, 0.999))
-optimizer_G = optim.Adam(netG.parameters(), lr=0.00002, betas=(0.9, 0.999))
-optimizer_D = optim.Adam(netD.parameters(), lr=0.0001, betas=(0.9, 0.999))
-
-# Other training settings
+# Record settings
 if not os.path.exists(os.path.join(args.outf, 'images')):
     os.makedirs(os.path.join(args.outf, 'images'))
 if not os.path.exists(os.path.join(args.outf, 'records')):
     os.makedirs(os.path.join(args.outf, 'records'))
 configure(os.path.join(args.outf, 'records'))
 
-loss_d_meter = ScoreMeter()
-loss_dr_meter = ScoreMeter()
-loss_df_meter = ScoreMeter()
-loss_e_meter = ScoreMeter()
-loss_g_meter = ScoreMeter()
+lossD_meter = ScoreMeter()
+errD_real_meter = ScoreMeter()
+errD_fake_meter = ScoreMeter()
+errD_grad_meter = ScoreMeter()
+lossE_meter = ScoreMeter()
+lossP_meter = ScoreMeter()
+lossG_meter = ScoreMeter()
+lossScatter_meter = ScoreMeter()
 test_err_meter = ScoreMeter()
+
+# Setup optimizer
+# 1e-4, 0.9, 0.999
+optimizer_D = optim.Adam(netD.parameters(), lr=0.0001, betas=(0.9, 0.999))
+optimizer_E = optim.Adam(netE.parameters(), lr=0.0001, betas=(0.9, 0.999))
+optimizer_P = optim.Adam(netP.parameters(), lr=0.0001, betas=(0.9, 0.999))
+optimizer_G = optim.Adam(netG.parameters(), lr=0.0001, betas=(0.9, 0.999))
+
+# Other training settings
+gen_iterations = 0
+Diters = 5
+errD_grad_penalty = 10
+scatter_margin = 1
+scatter_y = torch.FloatTensor([-1])
+num_gens_per_epoch = len(train_loader) // 8
+save_freqency = 1 * num_gens_per_epoch  # save every # epoch
+if save_freqency < 1:
+    save_freqency = 1
+print('Save frequency: ', save_freqency)
+old_record_fn = 'youll_never_find_me'
+best_test_error = 1e19
+best_epoch = 0
+best_generation = 0
 
 # Train model
 print("=> traning")
-gen_iterations = 0
-Diters = 5
 for epoch in range(args.niter):
     data_iter = iter(train_loader)
     i = 0  # data counter
     while i < len(train_loader):
-        for p in netD.parameters():  # reset requires_grad
-            p.requires_grad = True  # they are set to False below in netE update
-        for p in netE.parameters():
-            p.requires_grad = False
-
-        # Train the discriminator Diters times
-        j = 0  # D update counter
-        while (j < Diters) and (i < len(train_loader)):
-            j += 1
-            ############################
-            # (1) Update netD
-            ############################
-            x, y = data_iter.next()
-            i += 1
-
-            # Train with real
-            x_real_cpu = x  # torch tensor on cpu
-            x_real = x
-            if args.cuda:
-                x_real = x_real.cuda()
-            x_real = Variable(x_real, volatile=True)  # volatile for inference only
-
-            netD.zero_grad()
-            zr = netE(x_real)
-            zrv = Variable(zr.data)
-            output_real = netD(zrv)
-            errD_real = output_real.mean()
-            errD_real.backward(mone)
-
-            # Train with fake
-            # Uncomment for multiclass priors
-            zf = torch.zeros(x_real.size(0), 200, 1, 1)
-            zfi = 0
-            for yi in y:
-                mu = means[yi]  # pick mean according to label
-                zf[zfi, :, :, :] = torch.from_numpy(rng.multivariate_normal(mu, variance)).float().view(200, 1, 1)
-                zfi += 1
-
-            # Uncomment for gender priors
-            # zf = torch.zeros(x_real.size(0), 2, 1, 1)
-            # f_ind = y.eq(0).nonzero()
-            # for fi in f_ind:
-                # zf[fi, :, :, :] = torch.zeros(2,1,1).normal_(-1,1)
-            # m_ind = y.eq(1).nonzero()
-            # for mi in m_ind:
-                # zf[mi, :, :, :] = torch.zeros(2,1,1).normal_(1,1)
-
-            if args.cuda:
-                zf = zf.cuda()
-            zf = Variable(zf)
-            output_fake = netD(zf)
-            errD_fake = output_fake.mean()
-            errD_fake.backward(one)
-            # gradient penalty
-            gradient_penalty = calc_gradient_penalty(netD, zr.data, zf.data, penalty=5)
-            gradient_penalty.backward()
-            errD = errD_real - errD_fake + gradient_penalty
-            # errD = errD_real - errD_fake
-            optimizer_D.step()
-
         ############################
-        # (2) Update netE
+        # Update netG netE
         ############################
-        for p in netD.parameters():
-            p.requires_grad = False  # to avoid computation
         for p in netE.parameters():
             p.requires_grad = True
+        for p in netG.parameters():
+            p.requires_grad = True
+        for p in netD.parameters():
+            p.requires_grad = False
+        for p in netP.parameters():
+            p.requires_grad = False
+
+        x, y = data_iter.next()
+        i += 1
+        netE.zero_grad()
+        netG.zero_grad()
+
+        x_ori = Variable(x.cuda())
+        x_reconstruct = netG(netE(x_ori))
+        lossG = torch.nn.functional.mse_loss(x_reconstruct, x_ori)
+        lossG.backward()
+        optimizer_E.step()
+        optimizer_G.step()
+        gen_iterations += 1
+
+        ############################
+        # Update netP
+        ############################
+        for p in netP.parameters():
+            p.requires_grad = True
+        for p in netE.parameters():
+            p.requires_grad = False
+        for p in netD.parameters():
+            p.requires_grad = False
+        for p in netG.parameters():
+            p.requires_grad = False
 
         if i < len(train_loader):
             x, y = data_iter.next()
@@ -336,121 +273,196 @@ for epoch in range(args.niter):
             new_data_iter = iter(train_loader)
             x, y = new_data_iter.next()
 
-        x_real_cpu = x  # torch tensor on cpu
-        x_real = x
-        if args.cuda:
-            x_real = x_real.cuda()
-        x_real = Variable(x_real)
+        netP.zero_grad()
 
-        netE.zero_grad()
-        zr = netE(x_real)
-        output_real = netD(zr)
-        errE = output_real.mean()
-        errE.backward(one)
-        optimizer_E.step()
+        zpre = make_onehot(y, args.topk_class)
+        _, zm, zvar = netP(Variable(zpre.cuda()))
+        # Scatter loss: constrain distance of Gaussians wrt their variances
+        Sw = zvar.norm(p=2, dim=1).pow(2).sum()  # within-class scatter
+        Sb = (zm - zm.mean(dim=0)).norm(p=2, dim=1).pow(2).sum()  # between-class scatter
+        # lossScatter = scatter_margin * Sw / Sb
+        lossScatter = torch.nn.functional.margin_ranking_loss(Sw, Sb, Variable(scatter_y.cuda()), margin=scatter_margin)
+        lossScatter.backward()
+
+        optimizer_P.step()
 
         ############################
-        # (3) Update netG
+        # Update netD
         ############################
+        for p in netD.parameters():
+            p.requires_grad = True
         for p in netE.parameters():
             p.requires_grad = False
+        for p in netP.parameters():
+            p.requires_grad = False
         for p in netG.parameters():
+            p.requires_grad = False
+
+        dj = 0  # D update counter
+        while (dj < Diters):
+            dj += 1
+            if i < len(train_loader):
+                x, y = data_iter.next()
+                i += 1
+            else:  # when data runs out, get new iter
+                new_data_iter = iter(train_loader)
+                x, y = new_data_iter.next()
+
+            netD.zero_grad()
+
+            # Train with real
+            x_real = Variable(x.cuda(), volatile=True)  # volatile for inference only
+            zr = netE(x_real)
+            zrv = Variable(zr.data)
+            output_real = netD(zrv)
+            errD_real = output_real.mean()
+            errD_real.backward(mone)  # gradient for cost ||zf - zr||
+
+            # Train with fake
+            zpre = make_onehot(y, args.topk_class)
+            zf, _, _ = netP(Variable(zpre.cuda(), volatile=True))
+            zfv = Variable(zf.data)
+            output_fake = netD(zfv)
+            errD_fake = output_fake.mean()
+            errD_fake.backward(one)
+
+            # Lipschitz constraint on D
+            errD_grad = calc_gradient_penalty(netD, zrv.data, zfv.data, penalty=errD_grad_penalty)  # gradient penalty
+            errD_grad.backward()
+            lossD = errD_fake - errD_real + errD_grad
+
+            optimizer_D.step()
+
+        ############################
+        # Update netE netP
+        ############################
+        for p in netE.parameters():
             p.requires_grad = True
+        for p in netP.parameters():
+            p.requires_grad = True
+        for p in netD.parameters():
+            p.requires_grad = False
+        for p in netG.parameters():
+            p.requires_grad = False
 
-        # if i < len(train_loader):
-            # x, y = data_iter.next()
-            # i += 1
-        # else:
-            # new_data_iter = iter(train_loader)
-            # x, y = new_data_iter.next()
+        if i < len(train_loader):
+            x, y = data_iter.next()
+            i += 1
+        else:  # when data runs out, get new iter
+            new_data_iter = iter(train_loader)
+            x, y = new_data_iter.next()
 
-        # x_real_cpu = x # torch tensor on cpu
-        # x_real = x
-        # if args.cuda:
-            # x_real = x_real.cuda()
-        # x_real = Variable(x_real)
+        netE.zero_grad()
+        netP.zero_grad()
 
-        netG.zero_grad()
-        zr = netE(x_real)
-        zrv = Variable(zr.data)
-        x_reconstruct = netG(zrv)
-        errG = (x_reconstruct - x_real).pow(2).mean()
-        errG.backward()
-        optimizer_G.step()
-        gen_iterations += 1
+        x_real = Variable(x.cuda())
+        output_real = netD(netE(x_real))
+        lossE = output_real.mean()
+        lossE.backward(one)
 
-        print('[{:d}/{:d}][{:d}/{:d}][{:d}] Loss_D: {:.4f} Loss_D_real: {:.4f} Loss_D_fake: {:.4f} Loss_E: {:.4f} Loss_G: {:.4f}'.format(
-            epoch, args.niter, i, len(train_loader), gen_iterations,
-            errD.data[0], errD_real.data[0], errD_fake.data[0], errE.data[0], errG.data[0]))
+        zpre = make_onehot(y, args.topk_class)
+        zf, _, _ = netP(Variable(zpre.cuda()))
+        output_fake = netD(zf)
+        lossP = output_fake.mean()
+        lossP.backward(mone)
+
+        optimizer_E.step()
+        optimizer_P.step()
+
+        print('[{:d}/{:d}][{:d}/{:d}][{:d}] '.format(epoch, args.niter, i, len(train_loader), gen_iterations) +
+              Fore.RED + 'LossD: {:.4f} '.format(lossD.data[0]) + Fore.RESET +
+              'ErrD_real: {:.4f} ErrD_fake: {:.4f} ErrD_grad: {:.4f} '.format(errD_real.data[0], errD_fake.data[0], errD_grad.data[0]) +
+              Fore.BLUE + 'LossE: {:.4f} LossP: {:.4f} LossScatter: {:.4f} '.format(lossE.data[0], lossP.data[0], lossScatter.data[0]) + Fore.RESET +
+              Fore.GREEN + 'LossG: {:.4f}'.format(lossG.data[0]) + Fore.RESET)
 
         # Save images & test
-        if (gen_iterations % 200) == 0:  # ~ 10 epoch
-            vutils.save_image(x_real_cpu,
-                              '{}/real_samples_gen_{:03d}.png'.format(os.path.join(args.outf, 'images'), gen_iterations),
+        if (gen_iterations % save_freqency) == 0:  # every 5 epochs
+            vutils.save_image(x_real.data.cpu(),
+                              '{}/real_samples_gen_{:03d}_epoch_{:d}.png'.format(os.path.join(args.outf, 'images'), gen_iterations, epoch),
                               normalize=False)
 
+            x_reconstruct = netG(netE(x_real))
             vutils.save_image(x_reconstruct.data,
-                              '{}/real_reconstruct_gen_{:03d}.png'.format(os.path.join(args.outf, 'images'), gen_iterations),
+                              '{}/real_reconstruct_gen_{:03d}_epoch_{:d}.png'.format(os.path.join(args.outf, 'images'), gen_iterations, epoch),
                               normalize=False)
 
-            zf = torch.zeros(x_real.size(0), 200, 1, 1)
-            zfi = 0
-            for yi in y:
-                mu = means[yi]  # pick mean according to label
-                zf[zfi, :, :, :] = torch.from_numpy(rng.multivariate_normal(mu, variance)).float().view(200, 1, 1)
-                zfi += 1
-
-            # zf = torch.zeros(x_real.size(0), 2, 1, 1)
-            # f_ind = y.eq(0).nonzero()
-            # for fi in f_ind:
-                # zf[fi, :, :, :] = torch.zeros(2,1,1).normal_(-1,1)
-            # m_ind = y.eq(1).nonzero()
-            # for mi in m_ind:
-                # zf[mi, :, :, :] = torch.zeros(2,1,1).normal_(1,1)
-
-            if args.cuda:
-                zf = zf.cuda()
-            zf = Variable(zf, volatile=True)
             fake = netG(zf)
             vutils.save_image(fake.data,
-                              '{}/fake_samples_gen_{:03d}.png'.format(os.path.join(args.outf, 'images'), gen_iterations),
+                              '{}/fake_samples_gen_{:03d}_epoch_{:d}.png'.format(os.path.join(args.outf, 'images'), gen_iterations, epoch),
                               normalize=False)
 
             # Test
+            end_timer = time.time()
             trues = []  # true labels
             preds = []  # predicted labels
-            for x, y in test_loader:  # iterate over batches
+            _, zo_mean, zo_var = netP(Variable(zpre_orac.cuda(), volatile=True))
+            zo_mean = zo_mean.view(-1, 200)
+            zo_var = zo_var.view(-1, 200)
+            for x, y in tqdm(test_loader, desc='testing', leave=True):  # iterate over batches
                 trues.append(y.numpy())
-                z = netE(Variable(x.cuda(), volatile=True))
-                # Compute prob
-                pred_j = []  # preds for zs (in a batch)
-                for zi in z:
-                    prob_i = []  # probs for zi
-                    for m in means:  # iterate over mixtures
-                        p = stats.multivariate_normal.pdf(zi.view(-1).data.cpu().numpy(), m, variance)
-                        prob_i.append(p)
-                    pred_j.append(np.argmax(prob_i))
-                preds.append(pred_j)
+                z_test = netE(Variable(x.cuda(), volatile=True)).view(-1, 200)
+                dists = Variable(torch.zeros(z_test.size(0), zo_mean.size(0)).cuda())
+                for ti, zi in enumerate(z_test):
+                    for tj, (zomj, zovarj) in enumerate(zip(zo_mean, zo_var)):
+                        dists[ti, tj] = ((zi - zomj).pow(2).div(zovarj.pow(2))).sum()
+                _, mini = dists.topk(1, dim=1, largest=False, sorted=True)  # find min index
+                # # Compute prob
+                # pred_j = []  # preds for zs (in a batch)
+                # for zi in z:
+                    # prob_i = []  # probs for zi
+                    # for m in means:  # iterate over mixtures
+                        # p = stats.multivariate_normal.pdf(zi.view(-1).data.cpu().numpy(), m, variance)
+                        # prob_i.append(p)
+                    # pred_j.append(np.argmax(prob_i))  # NOTE: max prob!
+                preds.append(mini.data.cpu().numpy())
             # Compute accuracy
-            trues = list(itertools.chain.from_iterable(trues))
-            preds = list(itertools.chain.from_iterable(preds))
+            trues = np.array(list(itertools.chain.from_iterable(trues))).reshape((-1,))
+            preds = np.array(list(itertools.chain.from_iterable(preds))).reshape((-1,))
             pred_error = 1. - np.count_nonzero(trues == preds) / float(len(trues))
+            print('Trues: ', trues)
+            print('Preds: ', preds)
             print('Test error: {:.4f}'.format(pred_error))
+            print('Test time: {:.4f}s'.format(time.time() - end_timer))
+
+            # Save best
+            is_best = pred_error < best_test_error
+            if is_best:
+                best_test_error = pred_error
+                best_epoch = epoch
+                best_generation = gen_iterations
+                save_checkpoint({
+                    'args': args,
+                    'epoch': epoch,
+                    'best_epoch': best_epoch,
+                    'gen_iterations': gen_iterations,
+                    'best_generation': best_generation,
+                    'best_test_error': best_test_error,
+                    'netE_state_dict': netE.state_dict(),
+                    'netG_state_dict': netG.state_dict(),
+                    'netD_state_dict': netD.state_dict(),
+                    'netP_state_dict': netP.state_dict()
+                }, os.path.join(args.outf, 'checkpoints'), 'checkpoint_BEST.pth.tar')
+                print(Fore.GREEN + 'Saved checkpoint for best test error {:.4f} at epoch {:d}'.format(best_test_error, best_epoch) + Fore.RESET)
 
             # Logging
             log_value('test_err', pred_error, gen_iterations)
-            log_value('loss_d', errD.data[0], gen_iterations)
-            log_value('loss_dr', errD_real.data[0], gen_iterations)
-            log_value('loss_df', errD_fake.data[0], gen_iterations)
-            log_value('loss_grad_d', gradient_penalty.data[0], gen_iterations)
-            log_value('loss_e', errE.data[0], gen_iterations)
-            log_value('loss_g', errG.data[0], gen_iterations)
+            log_value('lossD', lossD.data[0], gen_iterations)
+            log_value('errD_real', errD_real.data[0], gen_iterations)
+            log_value('errD_fake', errD_fake.data[0], gen_iterations)
+            log_value('errD_grad', errD_grad.data[0], gen_iterations)
+            log_value('lossE', lossE.data[0], gen_iterations)
+            log_value('lossP', lossP.data[0], gen_iterations)
+            log_value('lossG', lossG.data[0], gen_iterations)
+            log_value('lossScatter', lossScatter.data[0], gen_iterations)
             test_err_meter.update(pred_error)
-            loss_d_meter.update(errD.data[0])
-            loss_dr_meter.update(errD_real.data[0])
-            loss_df_meter.update(errD_fake.data[0])
-            loss_e_meter.update(errE.data[0])
-            loss_g_meter.update(errG.data[0])
+            lossD_meter.update(lossD.data[0])
+            errD_real_meter.update(errD_real.data[0])
+            errD_fake_meter.update(errD_fake.data[0])
+            errD_grad_meter.update(errD_grad.data[0])
+            lossE_meter.update(lossE.data[0])
+            lossP_meter.update(lossP.data[0])
+            lossG_meter.update(lossG.data[0])
+            lossScatter_meter.update(lossScatter.data[0])
 
             # Checkpointing
             save_checkpoint({
@@ -459,12 +471,22 @@ for epoch in range(args.niter):
                 'gen_iterations': gen_iterations,
                 'netE_state_dict': netE.state_dict(),
                 'netG_state_dict': netG.state_dict(),
-                'netD_state_dict': netD.state_dict()
+                'netD_state_dict': netD.state_dict(),
+                'netP_state_dict': netP.state_dict()
             }, os.path.join(args.outf, 'checkpoints'), 'checkpoint_gen_{:d}_epoch_{:d}.pth.tar'.format(gen_iterations, epoch))
 
+            # Delete old checkpoint to save space
+            new_record_fn = os.path.join(args.outf, 'checkpoints', 'checkpoint_gen_{:d}_epoch_{:d}.pth.tar'.format(gen_iterations, epoch))
+            if os.path.exists(old_record_fn) and os.path.exists(new_record_fn):
+                os.remove(old_record_fn)
+            old_record_fn = new_record_fn
+
 test_err_meter.save('test_err', os.path.join(args.outf, 'records'), 'test_err.tsv')
-loss_d_meter.save('loss_d', os.path.join(args.outf, 'records'), 'loss_d.tsv')
-loss_dr_meter.save('loss_dr', os.path.join(args.outf, 'records'), 'loss_dr.tsv')
-loss_df_meter.save('loss_df', os.path.join(args.outf, 'records'), 'loss_df.tsv')
-loss_e_meter.save('loss_e', os.path.join(args.outf, 'records'), 'loss_e.tsv')
-loss_g_meter.save('loss_g', os.path.join(args.outf, 'records'), 'loss_g.tsv')
+lossD_meter.save('lossD', os.path.join(args.outf, 'records'), 'lossD.tsv')
+errD_real_meter.save('errD_real', os.path.join(args.outf, 'records'), 'errD_real.tsv')
+errD_fake_meter.save('errD_fake', os.path.join(args.outf, 'records'), 'errD_fake.tsv')
+errD_grad_meter.save('errD_grad', os.path.join(args.outf, 'records'), 'errD_grad.tsv')
+lossE_meter.save('lossE', os.path.join(args.outf, 'records'), 'lossE.tsv')
+lossP_meter.save('lossP', os.path.join(args.outf, 'records'), 'lossP.tsv')
+lossG_meter.save('lossG', os.path.join(args.outf, 'records'), 'lossG.tsv')
+lossScatter_meter.save('lossScatter', os.path.join(args.outf, 'records'), 'lossScatter.tsv')
