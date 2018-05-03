@@ -27,15 +27,15 @@ class _zpreConditioner(nn.Module):
     def __init__(self, num_class):
         super(_zpreConditioner, self).__init__()
         self.preconditioner = nn.Sequential(
-            nn.Linear(num_class, 1000),
+            nn.Linear(num_class, 1000, bias=False),
             nn.BatchNorm1d(1000),
             nn.LeakyReLU(0.2),
-            nn.Linear(1000, 1000),
-            nn.BatchNorm1d(1000),
-            nn.LeakyReLU(0.2),
-            nn.Linear(1000, 1000),
+            nn.Linear(1000, 1000, bias=False),
             nn.BatchNorm1d(1000),
             nn.LeakyReLU(0.2)
+            # nn.Linear(1000, 1000),
+            # nn.BatchNorm1d(1000),
+            # nn.LeakyReLU(0.2)
         )
         self.project_mean = nn.Sequential(
             nn.Linear(1000, 200)
@@ -46,8 +46,9 @@ class _zpreConditioner(nn.Module):
 
     def forward(self, x):
         h = self.preconditioner(x)
-        mean, logvar = self.project_mean(h), self.project_var(h)
-        var = logvar.exp()
+        mean = self.project_mean(h)
+        var = self.project_var(h)
+        # var = logvar.exp()
         eps = torch.normal(torch.zeros(*var.size())).cuda()  # N(0, I)
         # Reparameterization trick
         z = mean + var * Variable(eps, requires_grad=False)  # var is std
@@ -67,8 +68,8 @@ class _codeNetD(nn.Module):
             nn.LeakyReLU(0.2),
             nn.Conv2d(1000, 1000, 1, 1, 0),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(1000, 1000, 1, 1, 0),
-            nn.LeakyReLU(0.2),
+            # nn.Conv2d(1000, 1000, 1, 1, 0),
+            # nn.LeakyReLU(0.2),
             nn.Conv2d(1000, 1, 1, 1, 0)
         )
 
@@ -99,15 +100,22 @@ class _senetE(nn.Module):
             nn.LeakyReLU(0.2),
             nn.Conv2d(512, 1024, 4, 2, 1, bias=False),  # 12
             nn.BatchNorm2d(1024),
+
+            # new
+            nn.AdaptiveAvgPool2d((1, 1)),  # 1024*1*1
             nn.LeakyReLU(0.2),
-            nn.Conv2d(1024, 2048, 4, 2, 1, bias=False),  # 6
-            nn.BatchNorm2d(2048),
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(2048, 2048, 4, 2, 1, bias=False),  # 3
-            nn.BatchNorm2d(2048),
-            nn.AdaptiveMaxPool2d((1, 1)),  # 2048*1*1
-            nn.LeakyReLU(0.2),
-            nn.Conv2d(2048, 200, 1, 1, 0, bias=False)  # 200*1*1
+            nn.Conv2d(1024, 200, 1, 1, 0, bias=False)  # 200*1*1
+
+            # original
+            # nn.LeakyReLU(0.2),
+            # nn.Conv2d(1024, 2048, 4, 2, 1, bias=False),  # 6
+            # nn.BatchNorm2d(2048),
+            # nn.LeakyReLU(0.2),
+            # nn.Conv2d(2048, 2048, 4, 2, 1, bias=False),  # 3
+            # nn.BatchNorm2d(2048),
+            # nn.AdaptiveMaxPool2d((1, 1)),  # 2048*1*1
+            # nn.LeakyReLU(0.2),
+            # nn.Conv2d(2048, 200, 1, 1, 0, bias=False)  # 200*1*1
         )
 
     def forward(self, x):
@@ -123,16 +131,24 @@ class _senetG(nn.Module):
         super(_senetG, self).__init__()
         # z 200*1*1
         self.generator = nn.Sequential(
-            nn.ConvTranspose2d(200, 2048, 4, 2, 0, bias=False),  # 4
-            nn.BatchNorm2d(2048),
-            nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(2048, 2048, 4, 2, 1, bias=False),  # 8
-            nn.BatchNorm2d(2048),
-            nn.LeakyReLU(0.2),
-            nn.ConvTranspose2d(2048, 1024, 4, 2, 1, bias=False),  # 16
+            # original
+            # nn.ConvTranspose2d(200, 2048, 4, 2, 0, bias=False),  # 4
+            # nn.BatchNorm2d(2048),
+            # nn.LeakyReLU(0.2),
+            # nn.ConvTranspose2d(2048, 2048, 4, 2, 1, bias=False),  # 8
+            # nn.BatchNorm2d(2048),
+            # nn.LeakyReLU(0.2),
+            # nn.ConvTranspose2d(2048, 1024, 4, 2, 1, bias=False),  # 16
+            # nn.BatchNorm2d(1024),
+            # nn.LeakyReLU(0.2),
+            # nn.ConvTranspose2d(1024, 512, 4, 2, 1, bias=False),  # 32
+
+            # new
+            nn.ConvTranspose2d(200, 1024, 16, 2, 0, bias=False),  # 16
             nn.BatchNorm2d(1024),
             nn.LeakyReLU(0.2),
             nn.ConvTranspose2d(1024, 512, 4, 2, 1, bias=False),  # 32
+
             nn.BatchNorm2d(512),
             nn.LeakyReLU(0.2),
             nn.ConvTranspose2d(512, 256, 4, 2, 1, bias=False),  # 64

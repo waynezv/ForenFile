@@ -22,9 +22,10 @@ def slerp(val, low, high):
     elif np.allclose(low, high):
         return low
 
-    omega = np.arccos(np.dot(low / np.linalg.norm(low), high / np.linalg.norm(high)))
+    omega = np.arccos(np.dot(low, high) / (np.linalg.norm(high) * np.linalg.norm(high)))
     so = np.sin(omega)
-    return np.sin((1.0 - val) * omega) / so * low + np.sin(val * omega) / so * high
+    # return np.sin((1.0 - val) * omega) / so * low + np.sin(val * omega) / so * high
+    return (1.0 - val) * low + val * high
 
 
 def gen_means_slerp(mean_l, mean_h, C):
